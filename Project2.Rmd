@@ -1,0 +1,237 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+# Project Phase 2
+## Emily Craft
+
+
+```{r, include = FALSE}
+library(tidyverse)
+library(tidymodels)
+library(mice) 
+library(VIM) 
+library(ranger) 
+library(randomForest) 
+library(caret)
+library(skimr)
+library(GGally)
+library(gridExtra)
+library(vip) 
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(MASS)
+library(devtools)
+library(parsnip)
+
+```
+
+```{r}
+library(readr)
+ames <- read_csv("ames_student2.csv")
+```
+
+
+```{r}
+ames = ames %>% mutate_if(is.character,as_factor)
+```
+
+```{r}
+ames = dplyr::select(ames, "Above_Median","Gr_Liv_Area","Year_Built","First_Flr_SF","Total_Bsmt_SF","Garage_Area","Year_Remod_Add","Full_Bath","Garage_Cars","Foundation","Garage_Type","Neighborhood")
+
+```
+
+### Logistic Regression
+
+```{r}
+ames_model = 
+  logistic_reg() %>% 
+  set_engine("glm") 
+
+ames_recipe = recipe(Above_Median ~., ames) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+logreg_wf = workflow() %>%
+  add_recipe(ames_recipe) %>% 
+  add_model(ames_model)
+
+amesfit = fit(logreg_wf, ames)
+```
+
+```{r}
+summary(amesfit$fit$fit$fit)
+```
+
+
+
+### Classification Tree
+
+```{r}
+set.seed(123) 
+ames_split = initial_split(ames, prop = 0.7, strata = Above_Median) 
+train = training(ames_split) 
+test = testing(ames_split)
+```
+
+```{r}
+set.seed(234)
+folds = vfold_cv(train, v = 5)
+```
+
+```{r}
+ames_recipe = recipe(Above_Median ~., ames) %>%
+  step_dummy(all_nominal(), -all_outcomes()) 
+
+tree_model = decision_tree(cost_complexity = tune()) %>% 
+  set_engine("rpart", model = TRUE) %>% 
+  set_mode("classification")
+
+tree_grid = grid_regular(cost_complexity(),
+                          levels = 25) 
+
+ames_wflow = 
+  workflow() %>% 
+  add_model(tree_model) %>% 
+  add_recipe(ames_recipe)
+
+tree_res = 
+  ames_wflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = tree_grid
+    )
+
+tree_res
+```
+
+```{r}
+tree_res %>%
+  collect_metrics() %>%
+  ggplot(aes(cost_complexity, mean)) +
+  geom_line(size = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) 
+```
+```{r}
+best_tree = tree_res %>%
+  select_best("accuracy")
+
+best_tree
+```
+
+```{r}
+final_wf = 
+  ames_wflow %>% 
+  finalize_workflow(best_tree)
+```
+
+```{r}
+final_fit = fit(final_wf, train)
+
+tree = final_fit %>% 
+  extract_fit_parsnip() %>% 
+  pluck("fit")
+
+fancyRpartPlot(tree, tweak = 2) 
+
+```
+
+
+### Random Forest
+
+```{r}
+set.seed(123)
+rf_folds = vfold_cv(train, v = 5)
+```
+
+```{r}
+ames_recipe = recipe(Above_Median ~., train) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+rf_model = rand_forest(mtry = tune(), min_n = tune(), trees = 100) %>% 
+  set_engine("ranger", importance = "permutation") %>% 
+  set_mode("classification")
+
+ames_wflow = 
+  workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(ames_recipe)
+
+set.seed(123)
+rf_res = tune_grid(
+  ames_wflow,
+  resamples = rf_folds,
+  grid = 20 
+)
+```
+
+```{r}
+rf_res %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  dplyr::select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "Accuracy")
+```
+
+
+```{r}
+ames_recipe = recipe(Above_Median ~., train) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+rf_model = rand_forest(mtry = tune(), min_n = tune(), trees = 100) %>% 
+  set_engine("ranger", importance = "permutation") %>% 
+  set_mode("classification")
+
+ames_wflow = 
+  workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(ames_recipe)
+
+rf_grid = grid_regular(
+  mtry(range = c(20, 25)), 
+  min_n(range = c(32, 70)), 
+  levels = 5
+)
+
+set.seed(123)
+rf_res_tuned = tune_grid(
+  ames_wflow,
+  resamples = rf_folds,
+  grid = rf_grid 
+)
+```
+
+```{r}
+best_rf = select_best(rf_res_tuned, "accuracy")
+
+final_rf = finalize_workflow(
+  ames_wflow,
+  best_rf
+)
+
+final_rf
+```
+
+```{r}
+final_rf_fit = fit(final_rf, train)
+```
+
+```{r}
+final_rf_fit %>% pull_workflow_fit() %>% vip(geom = "point")
+```
+
+
+
+
+
